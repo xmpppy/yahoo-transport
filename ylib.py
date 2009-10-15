@@ -7,6 +7,9 @@ import socket, time
 import avatar
 import re
 import random
+import httplib
+import md5
+import base64
 
 
 def printpacket(packet):
@@ -30,7 +33,7 @@ class YahooCon:
     hostlist = socket.gethostbyname_ex('scs.msg.yahoo.com')[2]
     #hostlist = ['cs1.msg.dcn.yahoo.com','cs2.msg.dcn.yahoo.com','cs3.msg.dcn.yahoo.com','cs4.msg.dcn.yahoo.com','cs5.msg.dcn.yahoo.com','cs6.msg.dcn.yahoo.com','cs7.msg.dcn.yahoo.com','cs8.msg.dcn.yahoo.com','cs9.msg.dcn.yahoo.com','cs10.msg.dcn.yahoo.com','cs11.msg.dcn.yahoo.com','cs12.msg.dcn.yahoo.com','cs13.msg.dcn.yahoo.com','cs14.msg.dcn.yahoo.com','cs15.msg.dcn.yahoo.com','cs16.msg.dcn.yahoo.com','cs17.msg.dcn.yahoo.com','cs18.msg.dcn.yahoo.com','cs40.msg.dcn.yahoo.com','cs41.msg.dcn.yahoo.com','cs42.msg.dcn.yahoo.com','cs43.msg.dcn.yahoo.com','cs44.msg.dcn.yahoo.com','cs45.msg.dcn.yahoo.com','cs46.msg.dcn.yahoo.com','cs50.msg.dcn.yahoo.com','cs51.msg.dcn.yahoo.com','cs52.msg.dcn.yahoo.com']
     port = 5050
-    version = 0x000c0000
+    version = 0x00100000
     sock = None
     # a dictionary of groups and members
     buddylist = {}
@@ -111,8 +114,74 @@ class YahooCon:
         session = hdr[5]
         self.session=session
         chalstr = pay[0][94]
-        (crypt1, crypt2) = YahooMD5.curphoo_process_auth(self.username,self.password,chalstr)
-        npay = ymsg_mkargu({6:crypt1,96:crypt2,0:self.username,1:self.username,2:self.username,135:'5,6,0,1358',148:'360'})
+
+        # Do HTTPS login.
+        h = httplib.HTTPSConnection('login.yahoo.com')
+        h.request('GET', '/config/pwtoken_get?src=ymsgr&ts=&login=%s&passwd=%s&chal=%s' % (self.username, self.password, chalstr))
+        resp = h.getresponse().read().splitlines()
+        code = resp[0]
+        if code != '0':
+            # Interpret login problems.  These should broken out into individual conditionals and given
+            # more specific messages in yahoo.py.
+            if code == '100' or code == '1212' or code == '1235':
+                # Username or password is missing (100), username or password is incorrect (1212),
+                # or username does not exist (1235).
+                if self.handlers.has_key('loginfail'):
+                    self.handlers['loginfail'](self,'badpassword')
+                return None
+
+            elif code == '1013':
+                # Username contains @yahoo.com or similar which needs removing.
+                if self.handlers.has_key('loginfail'):
+                    self.handlers['loginfail'](self,'badusername')
+                return None
+
+            elif code == '1213' or code == '1214' or code == '1236' or code == '1218':
+                # Security lock on account due to failed login attempts (1213 and 1236), general security
+                # lock (1214), or account deactivated by Yahoo! (1218).
+                if self.handlers.has_key('loginfail'):
+                    self.handlers['loginfail'](self,'locked')
+                return None
+
+            else:
+                # Other error not listed.
+                if self.handlers.has_key('loginfail'):
+                    self.handlers['loginfail'](self)
+                return None
+
+        # No error in code, so get remaining fields.
+        ymsgr = resp[1][resp[1].index('=') + 1:]
+        partnerid = resp[2][resp[2].index('=') + 1:]
+        if self.dumpProtocol: print "HTTPS pwtoken_get response {code: %s, ymsgr: %s, partnerid: %s}" % (code, ymsgr, partnerid)
+
+        # Login successful, grab our crumb.
+        h.request('GET', '/config/pwtoken_login?src=ymsgr&ts=&token=%s' % ymsgr)
+        resp = h.getresponse().read().splitlines()
+        code = resp[0]
+        crumb = resp[1][resp[1].index('=') + 1:]
+        y_crumb = resp[2][resp[2].index('=') + 1:]
+        t_crumb = resp[3][resp[3].index('=') + 1:]
+        validfor = resp[4][resp[4].index('=') + 1:]
+        if self.dumpProtocol: print "HTTPS pwtoken_login response {code: %s, crumb: %s, y_crumb: %s, t_crumb: %s, validfor: %s}" % (code, crumb, y_crumb, t_crumb, validfor)
+
+        # Calculate hash of crumb and challenge string.
+        mhash = md5.new()
+        mhash.update(crumb)
+        mhash.update(chalstr)
+        bhash = base64.encodestring(mhash.digest()).replace('+', '.').replace('/', '_').replace('=', '-').strip()
+
+        # Assemble response packet.
+        npay = ymsg_mkargu({
+            1:   self.username,
+            0:   self.username,
+            277: y_crumb,
+            278: t_crumb,
+            307: bhash,
+            244: '2097087',
+            2:   self.username,
+            2:   '1',
+            98:  'us',
+            135: '9.0.0.1389'})
         nhdr = ymsg_mkhdr(self.version,len(npay),Y_challenge,0x5a55aa55,self.session)
         return nhdr+npay
 
@@ -224,6 +293,9 @@ class YahooCon:
                                         self.handlers['offline'](self,pay[each][7])
                     if not self.resources.has_key(pay[each][7]) or self.resources[pay[each][7]] == []:
                         self.roster[pay[each][7]]=('unavailable', None, None)
+                        if self.handlers.has_key('offline'):
+                            self.handlers['offline'](self,pay[each][7])
+
         elif len(pay[0].keys()) == 0:
             if self.handlers.has_key('closed'):
                 self.handlers['closed'](self)
@@ -442,6 +514,88 @@ class YahooCon:
             elif hdr[4] == 2:
                 if self.handlers.has_key('roommessagefail'):
                     self.handlers['roommessagefail'](self, pay[0][109], pay[0][104], msg)
+
+    def ymsg_cloud(self, hdr, pay):
+        # Loop through the payload entries and pull out groups and buddy names.  The odd loop construct is to make
+        # sure the entries are parsed in order; I'm not convinced (yet) that dict's .values() will always iterate
+        # in the desired order.
+        group = 'Top Level'
+        i = 0
+        while pay.has_key(i):
+            entry = pay[i]
+            i = i + 1
+
+            # Entry is a group.
+            if entry.has_key(65):
+                group = entry[65]
+                self.buddylist[group] = []
+
+            # Entry is a buddy.
+            if entry.has_key(300) and entry.has_key(7):
+                buddy = entry[7]
+
+                # Ignore MSN contacts for now.  Message receipt seems to work but sending is non-functional, at
+                # least in my tests.  I've also had reports of presence not really working.  Feel free to
+                # comment this out if you wish to play with it.
+                # I don't know if buddy names will have `@yahoo.com' at the end but I thought I'd make sure.
+                if buddy.find('@') > 0 and not buddy.endswith('@yahoo.com'):
+                    continue
+
+                self.buddylist[group].append(buddy)
+                if not self.roster.has_key(buddy):
+                    self.roster[buddy]=('unavailable',None, None)
+                if self.handlers.has_key('subscribe'):
+                    self.handlers['subscribe'](self, buddy, '')
+
+    def ymsg_statusupdate15(self, hdr, pay):
+        # If we're here then buddy is online in some sense.  Let's figure out how online they are.  This message may
+        # contain more than one buddy status (this seems to happen right after login).
+        for entry in pay.values():
+            if not entry.has_key(7) or not entry.has_key(10):
+                continue
+
+            buddy = entry[7]
+            typ = int(entry[10])
+
+            # Ignore MSN contacts for now.  See similar comment in ymsg_cloud() for rationale.
+            if buddy.find('@') > 0 and not buddy.endswith('@yahoo.com'):
+                continue
+
+            # Grab status message, if any.
+            status = ''
+            if entry.has_key(19):
+                status = entry[19]
+
+            # Determine idle/away status.
+            away = 0
+            idle = 0
+            if typ > 0 and typ < 12:
+                away = 1
+            if entry.has_key(47) and int(entry[47]) > 0:
+                away = 1
+            if typ == 999:
+                idle = 1
+
+            # Update roster and presence.
+            if typ < 1000 and typ != 12:
+                # Buddy is online...
+                if away == 1:
+                    # ... but away.
+                    self.roster[buddy] = ('available', 'dnd', status)
+                elif idle == 1:
+                    # ... but idle.
+                    self.roster[buddy] = ('available', 'away', status)
+                else:
+                    # ... and not idle or away.
+                    self.roster[buddy] = ('available', None, status)
+
+                if self.handlers.has_key('online'):
+                    self.handlers['online'](self, buddy, '')
+            else:
+                # Buddy is offline.
+                self.roster[buddy] = ('unavailable', None, None)
+                if self.handlers.has_key('offline'):
+                    self.handlers['offline'](self, buddy)
 
     def ymsg_init(self):
         try:
@@ -688,8 +842,9 @@ class YahooCon:
                 if s[3] == Y_chalreq:           #87
                     # give salt
                     challenge = self.ymsg_challenge(s,t)
-                    if self.dumpProtocol: printpacket(challenge)
-                    self.sock.send(challenge)
+                    if challenge:
+                        if self.dumpProtocol: printpacket(challenge)
+                        self.sock.send(challenge)
                 elif s[3] == Y_login:           #85
                     # login ok
                     self.ymsg_login(s,t)
@@ -748,6 +903,10 @@ class YahooCon:
                     self.ymsg_init()
                 elif s[3] == Y_chatlogout:
                     self.chatlogin = False
+                elif s[3] == Y_statusupdate15: #240
+                    self.ymsg_statusupdate15(s, t)
+                elif s[3] == Y_cloud:       #241
+                    self.ymsg_cloud(s,t)
                 else:
                     pass
                 #print "remove packet"

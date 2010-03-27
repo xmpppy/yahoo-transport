@@ -5,6 +5,7 @@ from curphoo import YahooMD5
 from yahoo_helpers import *
 import socket, time
 import avatar
+import pprint
 import re
 import random
 import httplib
@@ -15,7 +16,7 @@ import base64
 def printpacket(packet):
     s,u = ymsg_dehdr(packet)
     t = ymsg_deargu(u[:s[2]])
-    print 'send', s, t, len(packet)
+    print 'send', s, pprint.pformat(t), len(packet)
 
 
 # Yahoo Functions
@@ -211,7 +212,7 @@ class YahooCon:
                 status = None
                 if pay[each].has_key(10):
                     (typ, status) = self.determine_typ_status(pay[each])
-                    
+
                 if pay[each].has_key(7):
                     self.roster[pay[each][7]]=('available', typ, status)
                     if pay[each].has_key(198):
@@ -377,7 +378,7 @@ class YahooCon:
 
     def ymsg_back(self,hdr,pay):
         if pay[0].has_key(10):
-            (typ, status) = self.determine_typ_status(pay[0])                
+            (typ, status) = self.determine_typ_status(pay[0])
             if pay[0].has_key(7):
                 self.roster[pay[0][7]]=('available',typ,status)
                 if self.handlers.has_key('online'):
@@ -515,7 +516,7 @@ class YahooCon:
                 if self.handlers.has_key('roommessagefail'):
                     self.handlers['roommessagefail'](self, pay[0][109], pay[0][104], msg)
 
-    def ymsg_cloud(self, hdr, pay):
+    def ymsg_buddylist15(self, hdr, pay):
         # Loop through the payload entries and pull out groups and buddy names.  The odd loop construct is to make
         # sure the entries are parsed in order; I'm not convinced (yet) that dict's .values() will always iterate
         # in the desired order.
@@ -525,20 +526,32 @@ class YahooCon:
             entry = pay[i]
             i = i + 1
 
+            if YB_type not in entry:
+                continue
+            typ = int(entry[YB_type])
+
             # Entry is a group.
-            if entry.has_key(65):
-                group = entry[65]
+            if typ == YBT_group and YB_groupname in entry:
+                group = entry[YB_groupname]
                 self.buddylist[group] = []
 
             # Entry is a buddy.
-            if entry.has_key(300) and entry.has_key(7):
-                buddy = entry[7]
+            if typ == YBT_buddy and YB_buddyname in entry:
+                buddy = entry[YB_buddyname]
+                fed = None
+                if YB_cloud in entry:
+                    fed = int(entry[YB_cloud])
 
+                #skeeziks:
                 # Ignore MSN contacts for now.  Message receipt seems to work but sending is non-functional, at
                 # least in my tests.  I've also had reports of presence not really working.  Feel free to
                 # comment this out if you wish to play with it.
-                # I don't know if buddy names will have `@yahoo.com' at the end but I thought I'd make sure.
-                if buddy.find('@') > 0 and not buddy.endswith('@yahoo.com'):
+                #normanr:
+                # Changed to detect federation network id (from pidgin).  To make return messages work you need
+                # to send the federation network id too, so you have to mangle the buddyname to support it.
+                # (pidgin prepends msn/ to the buddy name, but xmpp doesn't allow /'s in bare jids,
+                #  so we'd need to pick another method of mangling the jid - maybe msn^buddyname?)
+                if fed:
                     continue
 
                 self.buddylist[group].append(buddy)
@@ -551,20 +564,23 @@ class YahooCon:
         # If we're here then buddy is online in some sense.  Let's figure out how online they are.  This message may
         # contain more than one buddy status (this seems to happen right after login).
         for entry in pay.values():
-            if not entry.has_key(7) or not entry.has_key(10):
+            if YB_buddyname not in entry or YB_status not in entry:
                 continue
 
-            buddy = entry[7]
-            typ = int(entry[10])
+            buddy = entry[YB_buddyname]
+            typ = int(entry[YB_status])
+            fed = None
+            if YB_cloud in entry:
+                fed = int(entry[YB_cloud])
 
             # Ignore MSN contacts for now.  See similar comment in ymsg_cloud() for rationale.
-            if buddy.find('@') > 0 and not buddy.endswith('@yahoo.com'):
+            if fed:
                 continue
 
             # Grab status message, if any.
             status = ''
-            if entry.has_key(19):
-                status = entry[19]
+            if YB_statusmessage in entry:
+                status = entry[YB_statusmessage]
 
             # Determine idle/away status.
             away = 0
@@ -838,7 +854,7 @@ class YahooCon:
                     print "Broken connection Terminating"
                     if self.handlers.has_key('closed'):
                         self.handlers['closed'](self)
-                if self.dumpProtocol: print 'recv', s, t, len(self.rbuf)
+                if self.dumpProtocol: print 'recv', s, pprint.pformat(t), len(self.rbuf)
                 if s[3] == Y_chalreq:           #87
                     # give salt
                     challenge = self.ymsg_challenge(s,t)
@@ -905,8 +921,8 @@ class YahooCon:
                     self.chatlogin = False
                 elif s[3] == Y_statusupdate15: #240
                     self.ymsg_statusupdate15(s, t)
-                elif s[3] == Y_cloud:       #241
-                    self.ymsg_cloud(s,t)
+                elif s[3] == Y_buddylist15:       #241
+                    self.ymsg_buddylist15(s,t)
                 else:
                     pass
                 #print "remove packet"

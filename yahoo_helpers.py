@@ -40,25 +40,35 @@ Y_gotoroom = 151    # Goto Room
 Y_joinroom = 152    # Join Room
 Y_leaveroom = 155   # Leave Room
 Y_inviteroom = 157  # Invite Room
-Y_chatlogout = 160      # Logout
+Y_chatlogout = 160  # Logout
 Y_ping = 161        # Primary Ping
 Y_chtmsg = 168      # Chat Message
 Y_avatar = 188      # Avatar Image update
-Y_statusupdate = 198 #update of status (like away/back etc)
-Y_advstatusupdate = 199 #update of advanced status (like avatar etc)
-Y_statusupdate15 = 240 # Protocol 15: status update (away/back, etc.)
-Y_cloud = 241       # 0 = Yahoo!, 2 = LiveID (WLM)
+Y_statusupdate = 198    # update of status (like away/back etc)
+Y_advstatusupdate = 199 # update of advanced status (like avatar etc)
+Y_changegroup = 231     # Protocol 15: change buddy group
+Y_statusupdate15 = 240  # Protocol 15: status update (away/back, etc.)
+Y_buddylist15 = 241     # Protocol 15: buddy list (groups, friends, blocked contacts)
+YB_type = 300
+YBT_group = 318
+YBT_buddy = 319
+YBT_blocked = 320
+YB_groupname = 65
+YB_buddyname = 7
+YB_status = 10
+YB_statusmessage = 19
+YB_cloud = 241          # missing/0 = Yahoo!, 1 = LCS/OCS, 2 = MSN/WLM, 9 = IBM/Sametime, 100 = Yahoo! Pingbox
 
 Yahoosep = '\xc0\x80'
 
 def ymsg_mkhdr(version, length, packettype, status, sessionid):
     # Make 20 byte yahoo header
     return struct.pack("!4slhhll", "YMSG", version, length, packettype, status, sessionid)
-    
+
 def ymsg_dehdr(text):
     # Unpack yahoo header into list
     return [struct.unpack("!4slhhll", text[0:20]),text[20:]]
-    
+
 def ymsg_deargu(text):
     # Unpack arguments into dict
     list = text.split(Yahoosep)
@@ -78,12 +88,10 @@ def ymsg_deargu(text):
                 d[count]={}
             d[count][n]=list.pop(0)
     return d
-    
+
 def ymsg_mkargu(dict):
     # Turn dict into Yahoo Argument string.
     s=''
     for each in dict.keys():
         s=s+'%d%s%s%s' %(each,Yahoosep,dict[each],Yahoosep)
     return s
-    
-        

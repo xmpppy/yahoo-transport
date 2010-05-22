@@ -1,7 +1,6 @@
 #! /usr/bin/env python
 
 # Yahoo driver test script.
-from curphoo import YahooMD5
 from yahoo_helpers import *
 import socket, time
 import avatar
@@ -9,8 +8,12 @@ import pprint
 import re
 import random
 import httplib
+import urllib
 import md5
 import base64
+from string import maketrans
+
+base64translate = maketrans('+/=', '._-')
 
 
 def printpacket(packet):
@@ -118,9 +121,17 @@ class YahooCon:
 
         # Do HTTPS login.
         h = httplib.HTTPSConnection('login.yahoo.com')
-        h.request('GET', '/config/pwtoken_get?src=ymsgr&ts=&login=%s&passwd=%s&chal=%s' % (self.username, self.password, chalstr))
-        resp = h.getresponse().read().splitlines()
-        code = resp[0]
+        params = urllib.urlencode({
+            'src': 'ymsgr',
+            'login': self.username,
+            'passwd': self.password,
+            'chal': chalstr})
+        h.request('GET', '/config/pwtoken_get?%s' % params)
+        resp = ('code=' + h.getresponse().read()).splitlines()
+        if self.dumpProtocol: print "HTTPS pwtoken_get response: %r" % resp
+        resp = dict([x.split('=', 1) for x in resp])
+
+        code = resp['code']
         if code != '0':
             # Interpret login problems.  These should broken out into individual conditionals and given
             # more specific messages in yahoo.py.
@@ -150,33 +161,27 @@ class YahooCon:
                     self.handlers['loginfail'](self)
                 return None
 
-        # No error in code, so get remaining fields.
-        ymsgr = resp[1][resp[1].index('=') + 1:]
-        partnerid = resp[2][resp[2].index('=') + 1:]
-        if self.dumpProtocol: print "HTTPS pwtoken_get response {code: %s, ymsgr: %s, partnerid: %s}" % (code, ymsgr, partnerid)
-
-        # Login successful, grab our crumb.
-        h.request('GET', '/config/pwtoken_login?src=ymsgr&ts=&token=%s' % ymsgr)
-        resp = h.getresponse().read().splitlines()
-        code = resp[0]
-        crumb = resp[1][resp[1].index('=') + 1:]
-        y_crumb = resp[2][resp[2].index('=') + 1:]
-        t_crumb = resp[3][resp[3].index('=') + 1:]
-        validfor = resp[4][resp[4].index('=') + 1:]
-        if self.dumpProtocol: print "HTTPS pwtoken_login response {code: %s, crumb: %s, y_crumb: %s, t_crumb: %s, validfor: %s}" % (code, crumb, y_crumb, t_crumb, validfor)
+        # No error in code, so login successful, grab our crumb.
+        params = urllib.urlencode({
+            'src': 'ymsgr',
+            'token': resp['ymsgr']})
+        h.request('GET', '/config/pwtoken_login?%s' % params)
+        resp = ('code=' + h.getresponse().read()).splitlines()
+        if self.dumpProtocol: print "HTTPS pwtoken_login response %r" % resp
+        resp = dict([x.split('=', 1) for x in resp])
 
         # Calculate hash of crumb and challenge string.
         mhash = md5.new()
-        mhash.update(crumb)
+        mhash.update(resp['crumb'])
         mhash.update(chalstr)
-        bhash = base64.encodestring(mhash.digest()).replace('+', '.').replace('/', '_').replace('=', '-').strip()
+        bhash = base64.b64encode(mhash.digest()).translate(base64translate)
 
         # Assemble response packet.
         npay = ymsg_mkargu({
             1:   self.username,
             0:   self.username,
-            277: y_crumb,
-            278: t_crumb,
+            277: resp['Y'],
+            278: resp['T'],
             307: bhash,
             244: '2097087',
             2:   self.username,

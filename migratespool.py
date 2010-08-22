@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/python
 
 """ Python importer script for migrating from the C based Yahoo transport 
 

@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/python
 import os
 try:
     version = 'git ' + open(os.path.join(os.path.dirname(__file__), '.git/refs/heads/master')).read().strip()

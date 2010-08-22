@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 from xmpp.simplexml import Node,T,NT,ustr, XMLescape
 from HTMLParser import HTMLParser
 import re

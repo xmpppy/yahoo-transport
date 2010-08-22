@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#!/usr/bin/python
 
 # Yahoo driver test script.
 from yahoo_helpers import *
